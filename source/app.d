@@ -2,55 +2,114 @@ import std.stdio;
 import deimos.zmq.zmq;
 import std.exception : enforce;
 
-void main() {
-    auto zctx = zmq_ctx_new();
+__gshared void* zctx;
+shared static this() {
+    zctx = zmq_ctx_new();
     assert(zctx != null);
-    scope(exit) zmq_ctx_term(zctx);
+}
 
-    int rc;
+shared static ~this() {
+    zmq_ctx_term(zctx);
+    zctx = null;
+}
 
-    char[41] server_pubkey;
-    char[41] server_privkey;
-    rc = zmq_curve_keypair(server_pubkey.ptr, server_privkey.ptr);
-    enforce(rc != -1);
+struct CurveKey {
+    char[41] pubkey;
+    char[41] pvtkey;
 
-    void* server = zmq_socket(zctx, ZMQ_PUSH);
-    assert(server !is null);
-    scope(exit) zmq_close(server);
-    int one = 1;
-    rc = zmq_setsockopt(server, ZMQ_CURVE_SERVER, &one, int.sizeof);
-    enforce(rc != -1);
-    rc = zmq_setsockopt(server, ZMQ_CURVE_SECRETKEY, server_privkey.ptr, 40);
-    enforce(rc != -1);
+    void create() {
+        int rc = zmq_curve_keypair(pubkey.ptr, pvtkey.ptr);
+        enforce(rc != -1);
+    }
+}
 
-    rc = zmq_bind(server, "tcp://*:9000");
-    enforce(rc != -1);
+struct ZSocket {
+    void* socket;
 
-    char[41] client_pubkey;
-    char[41] client_privkey;
-    rc = zmq_curve_keypair(client_pubkey.ptr, client_privkey.ptr);
-    enforce(rc != -1);
+    @disable this(this);
 
-    void* client = zmq_socket(zctx, ZMQ_PULL);
-    assert(client !is null);
-    scope(exit) zmq_close(client);
-    rc = zmq_setsockopt(client, ZMQ_CURVE_PUBLICKEY, client_pubkey.ptr, 40);
-    enforce(rc != -1);
-    rc = zmq_setsockopt(client, ZMQ_CURVE_SECRETKEY, client_privkey.ptr, 40);
-    enforce(rc != -1);
-    rc = zmq_setsockopt(client, ZMQ_CURVE_SERVERKEY, server_pubkey.ptr, 40);
-    enforce(rc != -1);
+    this(int type) {
+        socket = zmq_socket(zctx, type);
+        enforce(socket !is null);
+    }
 
-    rc = zmq_connect(client, "tcp://127.0.0.1:9000");
-    enforce(rc != -1);
+    ~this() {
+        import std.algorithm : swap;
 
-    rc = zmq_send(server, "some data".ptr, 9, 0);
-    enforce(rc != -1);
+        if (socket is null) return;
+        void* destroying;
+        swap(destroying, socket);
+        zmq_close(destroying);
+    }
 
+    void setsockopt(int opt, const(void)* value, size_t len) {
+        int rc = zmq_setsockopt(socket, opt, value, len);
+        enforce(rc != -1);
+    }
+    
+    void setsockopt(int opt, int value) {
+        setsockopt(opt, &value, int.sizeof);
+    }
+
+    void curveServer(in CurveKey key) {
+        setsockopt(ZMQ_CURVE_SERVER, 1);
+        setsockopt(ZMQ_CURVE_SECRETKEY, key.pvtkey.ptr, 40);
+    }
+
+    void curveClient(in CurveKey server, in CurveKey key) {
+        setsockopt(ZMQ_CURVE_SERVERKEY, server.pubkey.ptr, 40);
+        setsockopt(ZMQ_CURVE_PUBLICKEY, key.pubkey.ptr, 40);
+        setsockopt(ZMQ_CURVE_SECRETKEY, key.pvtkey.ptr, 40);
+    }
+
+    void bind(string addr) {
+        import core.stdc.stdlib : alloca;
+        char[] addrZ = (cast(char*)alloca(addr.length + 1))[0..addr.length+1];
+        addrZ[0..$-1] = addr[];
+        addrZ[$-1] = 0;
+        int rc = zmq_bind(socket, addrZ.ptr);
+        enforce(rc != -1);
+    }
+
+    void connect(string addr) {
+        import core.stdc.stdlib : alloca;
+        char[] addrZ = (cast(char*)alloca(addr.length + 1))[0..addr.length+1];
+        addrZ[0..$-1] = addr[];
+        addrZ[$-1] = 0;
+        int rc = zmq_connect(socket, addrZ.ptr);
+        enforce(rc != -1);
+    }
+
+    void send(const(void)[] data) {
+        int rc = zmq_send(socket, data.ptr, data.length, 0);
+        enforce(rc != -1);
+    }
+
+    void[] recv(void[] data) {
+        int rc = zmq_recv(socket, data.ptr, data.length, 0);
+        enforce(rc != -1);
+        return data[0..rc];
+    }
+}
+
+void main() {
+    CurveKey serverKey;
+    serverKey.create();
+
+    ZSocket server = ZSocket(ZMQ_PUSH);
+    server.curveServer(serverKey);
+    server.bind("tcp://*:9000");
+
+    CurveKey clientKey;
+    clientKey.create();
+
+    ZSocket client = ZSocket(ZMQ_PULL);
+    client.curveClient(serverKey, clientKey);
+    client.connect("tcp://127.0.0.1:9000");
+
+    server.send("some data");
     char[256] buf;
-    rc = zmq_recv(client, buf.ptr, 256, 0);
-    enforce(rc != -1);
-    enforce(buf[0..rc] == "some data");
+    enforce((cast(char[])client.recv(buf)) == "some data");
 
     writeln("Grasslands ok!");
 }
