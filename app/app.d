@@ -1,5 +1,5 @@
 import std.stdio;
-import zmq;
+import zmqworld.zmq;
 import std.datetime;
 import core.thread;
 import std.conv;

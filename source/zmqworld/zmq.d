@@ -1,4 +1,4 @@
-module zmq;
+module zmqworld.zmq;
 
 import deimos.zmq.zmq;
 import std.exception : enforce;
