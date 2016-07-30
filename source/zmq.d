@@ -2,6 +2,8 @@ module zmq;
 
 import deimos.zmq.zmq;
 import std.exception : enforce;
+import std.datetime : Duration, msecs;
+import std.format : format;
 
 public import deimos.zmq.zmq : ZMQ_PAIR, ZMQ_PUB, ZMQ_SUB, ZMQ_REQ, ZMQ_REP, ZMQ_DEALER, ZMQ_ROUTER, ZMQ_PULL, ZMQ_PUSH, ZMQ_XPUB, ZMQ_XSUB, ZMQ_STREAM, ZMQ_AFFINITY;
 public import deimos.zmq.zmq : ZMQ_IDENTITY, ZMQ_SUBSCRIBE, ZMQ_UNSUBSCRIBE, ZMQ_RATE, ZMQ_RECOVERY_IVL, ZMQ_SNDBUF, ZMQ_RCVBUF, ZMQ_RCVMORE, ZMQ_FD, ZMQ_EVENTS, ZMQ_TYPE, ZMQ_LINGER, ZMQ_RECONNECT_IVL, ZMQ_BACKLOG, ZMQ_RECONNECT_IVL_MAX, ZMQ_MAXMSGSIZE, ZMQ_SNDHWM, ZMQ_RCVHWM, ZMQ_MULTICAST_HOPS, ZMQ_RCVTIMEO, ZMQ_SNDTIMEO, ZMQ_LAST_ENDPOINT, ZMQ_ROUTER_MANDATORY, ZMQ_TCP_KEEPALIVE, ZMQ_TCP_KEEPALIVE_CNT, ZMQ_TCP_KEEPALIVE_IDLE, ZMQ_TCP_KEEPALIVE_INTVL, ZMQ_IMMEDIATE, ZMQ_XPUB_VERBOSE, ZMQ_ROUTER_RAW, ZMQ_IPV6, ZMQ_MECHANISM, ZMQ_PLAIN_SERVER, ZMQ_PLAIN_USERNAME, ZMQ_PLAIN_PASSWORD, ZMQ_CURVE_SERVER, ZMQ_CURVE_PUBLICKEY, ZMQ_CURVE_SECRETKEY, ZMQ_CURVE_SERVERKEY, ZMQ_PROBE_ROUTER, ZMQ_REQ_CORRELATE, ZMQ_REQ_RELAXED, ZMQ_CONFLATE, ZMQ_ZAP_DOMAIN, ZMQ_ROUTER_HANDOVER, ZMQ_TOS, ZMQ_CONNECT_RID, ZMQ_GSSAPI_SERVER, ZMQ_GSSAPI_PRINCIPAL, ZMQ_GSSAPI_SERVICE_PRINCIPAL, ZMQ_GSSAPI_PLAINTEXT, ZMQ_HANDSHAKE_IVL, ZMQ_SOCKS_PROXY, ZMQ_XPUB_NODROP;
@@ -99,6 +101,10 @@ struct ZSocket {
         return r;
     }
 
+    bool rcvmore() {
+        return getsockopt!int(ZMQ_RCVMORE) > 0;
+    }
+
     void curveServer(in CurveKey key) {
         setsockopt(ZMQ_CURVE_SERVER, 1);
         setsockopt(ZMQ_CURVE_SECRETKEY, key.pvtkey.ptr, 40);
@@ -157,10 +163,54 @@ struct ZSocket {
     void recv(ref ZMessage msg, bool* recvmore = null) {
         enforce(cast(bool) msg);
         int rc = zmq_msg_recv(&msg.msg, socket, 0);
+        enforce(rc != -1, "Errno %s".format(zmq_errno()));
         if (recvmore !is null) {
             *recvmore = getsockopt!int(ZMQ_RCVMORE) > 0;
         }
+    }
+
+    static ZSocket* pollRecv(ZSocket[] sockets, Duration timeoutDur = -1.msecs) {
+        import core.stdc.stdlib : alloca;
+        import std.algorithm;
+
+        ulong timeout = timeoutDur.total!"msecs";
+        auto socketitems = cast(zmq_pollitem_t[])(alloca(zmq_pollitem_t.sizeof * sockets.length)[0..sockets.length*zmq_pollitem_t.sizeof]);
+        foreach(i, ref item; socketitems) {
+            item.socket = sockets[i].socket;
+            item.fd = 0;
+            item.events = ZMQ_POLLIN;
+        }
+
+        int rc = zmq_poll(socketitems.ptr, cast(int) socketitems.length, timeout);
         enforce(rc != -1);
+        if (rc == 0) return null;
+        foreach(i, each; socketitems) {
+            if (each.revents & ZMQ_POLLIN) {
+                assert(sockets[i].socket == each.socket);
+                return &(sockets[i]);
+            }
+        }
+
+        assert(false);
+    }
+
+    static ZSocket* pollRecv(ZSocket*[] sockets, Duration timeoutDur = -1.msecs) {
+        import std.array;
+        import std.algorithm;
+
+        ulong timeout = timeoutDur.total!"msecs";
+        auto socketitems = sockets.map!(x => zmq_pollitem_t(x.socket, 0, ZMQ_POLLIN, 0)).array;
+        int rc = zmq_poll(socketitems.ptr, cast(int) socketitems.length, timeout);
+        enforce(rc != -1);
+        if (rc == 0) return null;
+        foreach(i, each; socketitems) {
+            if (each.revents & ZMQ_POLLIN) {
+                assert(sockets[i].socket == each.socket);
+                return sockets[i];
+            }
+        }
+
+        assert(false);
     }
 }
 
@@ -205,10 +255,26 @@ struct ZMessage {
         return (cast(ubyte*)zmq_msg_data(&msg))[0..zmq_msg_size(&msg)];
     }
 
+    const(char)[] userId() {
+        assert(this);
+
+        import std.string;
+        const(char*) r = zmq_msg_gets(&msg, "User-Id");
+        enforce(r !is null);
+        return r.fromStringz;
+    }
+
     bool opCast(T)() const
     if (is(T == bool))
     {
         return msg != zmq_msg_t.init;
+    }
+
+    ref T opCast(T)()
+    if (!is(T == bool))
+    {
+        enforce(T.sizeof == data.length);
+        return (cast(T[])data)[0];
     }
 }
 
@@ -260,68 +326,98 @@ class AuthError : Exception {
     }
 }
 
-void installZap(bool delegate(in CurveKey ident) cb) {
+struct ZapCtx {
     import core.thread;
 
-    ZSocket zapReady = ZSocket(ZMQ_REP);
-    zapReady.bind("inproc://zap_ready");
+    Thread zapThread;
 
-    auto a = new Thread(() {
-        import core.stdc.stdlib;
-        import std.algorithm : min;
-        debug import std.stdio;
+    @disable this(this);
+    this(const(char)[] delegate(ref const(CurveKey) key) cb) {
+        ZSocket zapReady = ZSocket(ZMQ_PULL);
+        zapReady.bind("inproc://zap_ready");
 
-        scope (failure) abort();
+        zapThread = new Thread(() {
+            import core.stdc.stdlib;
+            import std.algorithm : min;
+            debug import std.stdio;
 
-        ZMessage msg_version = ZMessage("1.0");
-        ZMessage msg_200 = ZMessage("200");
-        ZMessage msg_400 = ZMessage("400");
-        ZMessage msg_500 = ZMessage("500");
+            scope (failure) abort();
 
-        ZSocket handler = ZSocket(ZMQ_REP);
-        handler.bind("inproc://zeromq.zap.01");
+            ZMessage msg_version = ZMessage("1.0");
+            ZMessage msg_200 = ZMessage("200");
+            ZMessage msg_400 = ZMessage("400");
+            ZMessage msg_500 = ZMessage("500");
 
-        {
-            ZSocket zapReadyNotify = ZSocket(ZMQ_REQ);
-            zapReadyNotify.connect("inproc://zap_ready");
-            ZMessage empty = ZMessage(0);
-            zapReadyNotify.send(empty);
-        }
+            ZSocket[2] sockets = [ZSocket(ZMQ_REP), ZSocket(ZMQ_PULL)];
+            auto handler = &sockets[0];
+            handler.bind("inproc://zeromq.zap.01");
+            auto term = &sockets[1];
+            term.bind("inproc://zap_destroy");
 
-        while (true) {
-            ZMessage[7] request;
-            auto requestN = handler.recvFrames(request);          
-            ZMessage[6] response;
-            foreach(ref r; response) r = ZMessage(0);
-            try {
-                response[0] = msg_version.copy;
-                if (request.length > 1) response[1] = request[1].copy;
-                enforce(requestN >= 6);
-                enforce((cast(char[])request[5].data) == "CURVE");
-                enforce(requestN == 7);
-                CurveKey key;
-                key.fromRaw(request[6].data);
-                if (!cb(key)) throw new AuthError(key);
-                writeln("Accepting ", key.pub);
-                response[2] = msg_200.copy;
-                response[4] = ZMessage(key.pub);
-            } catch(AuthError e) {
-                debug stderr.writeln(e);
-                response[2] = msg_400.copy;
-                response[3] = ZMessage(e.msg[0..$.min(255)]);
-            } catch(Exception e) {
-                debug stderr.writeln(e);
-                response[2] = msg_500.copy;
-                response[3] = ZMessage(e.msg[0..$.min(255)]);
+            {
+                ZSocket zapReadyNotify = ZSocket(ZMQ_PUSH);
+                zapReadyNotify.connect("inproc://zap_ready");
+                ZMessage empty = ZMessage(0);
+                zapReadyNotify.send(empty);
             }
-            assert(response[2].data.length > 0);
-            handler.sendFrames(response[]);
-        }
-    });
+            
+            while (true) {
+                auto next = ZSocket.pollRecv(sockets[]);
+                if (next == term) {
+                    ZMessage[1] termFrames;
+                    (*term).recvFrames(termFrames);
+                    break;
+                }
 
-    a.isDaemon = true;
-    a.start();
-    zapReady.recv();
+                ZMessage[7] request;
+                auto requestN = (*handler).recvFrames(request);
+
+                ZMessage[6] response;
+                foreach(ref r; response) r = ZMessage(0);
+                try {
+                    response[0] = msg_version.copy;
+                    if (request.length > 1) response[1] = request[1].copy;
+                    enforce(requestN >= 6);
+                    enforce((cast(char[])request[5].data) == "CURVE");
+                    enforce(requestN == 7);
+                    CurveKey key;
+                    key.fromRaw(request[6].data);
+                    const(char)[] userid = cb(key);
+                    if (userid.length == 0) throw new AuthError(key);
+                    response[2] = msg_200.copy;
+                    response[4] = ZMessage(userid);
+                } catch(AuthError e) {
+                    debug stderr.writeln(e);
+                    response[2] = msg_400.copy;
+                    response[3] = ZMessage(e.msg[0..$.min(255)]);
+                } catch(Exception e) {
+                    debug stderr.writeln(e);
+                    response[2] = msg_500.copy;
+                    response[3] = ZMessage(e.msg[0..$.min(255)]);
+                }
+                assert(response[2].data.length > 0);
+                (*handler).sendFrames(response[]);
+            }
+        });
+
+        zapThread.start();
+        zapReady.recv();
+    }
+
+    ~this() {
+        if (zapThread is null) return;
+        
+        ZSocket term = ZSocket(ZMQ_PUSH);
+        term.connect("inproc://zap_destroy");
+        term.send("");
+        zapThread.join();
+
+        zapThread = null;
+    }
+};
+
+ZapCtx installZap(const(char)[] delegate(ref const(CurveKey) key) cb) {
+    return ZapCtx(cb);
 }
 
 struct RaiiList(T) {

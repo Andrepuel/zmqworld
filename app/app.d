@@ -10,6 +10,11 @@ void main() {
     import std.algorithm;
     import std.range;
 
+    auto zapCtx = installZap((ref const(CurveKey) x) {
+        writeln("Accepting ", x.pub);
+        return x.pub;
+    });
+
     ZSocket toAgent = ZSocket(ZMQ_ROUTER);
     toAgent.bind("tcp://*:9000");
 
@@ -26,9 +31,9 @@ void main() {
 }
 
 void main4() {
-    installZap((x) {
+    auto zapCtx = installZap((ref const(CurveKey) x) {
         writeln("Accepting ", x.pub);
-        return true;
+        return x.pub;
     });
 
     CurveKey b;
