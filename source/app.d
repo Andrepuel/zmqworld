@@ -7,6 +7,25 @@ import std.range;
 import std.getopt;
 
 void main() {
+    import std.algorithm;
+    import std.range;
+
+    ZSocket toAgent = ZSocket(ZMQ_ROUTER);
+    toAgent.bind("tcp://*:9000");
+
+    ZSocket oneAgent = ZSocket(ZMQ_REQ);
+    oneAgent.setsockopt(ZMQ_IDENTITY, "48091521119");
+    oneAgent.connect("tcp://127.0.0.1:9000");
+    oneAgent.send("hello");
+
+    toAgent.recvFrames().ptrList.map!(x => cast(char[])x.data).writeln;
+    ZMessage[3] send = [ZMessage("48091521119"), ZMessage(""), ZMessage("sup")];
+    toAgent.sendFrames(send[]);
+
+    oneAgent.recvFrames().ptrList.map!(x => cast(char[])x.data).writeln;
+}
+
+void main4() {
     installZap((x) {
         writeln("Accepting ", x.pub);
         return true;
@@ -14,15 +33,15 @@ void main() {
 
     CurveKey b;
     b.create();
-    ZSocket server = ZSocket(ZMQ_ROUTER);
+    ZSocket server = ZSocket(ZMQ_REP);
     server.curveServer(b);
     server.bind("tcp://*:9000");
 
     CurveKey c;
     c.create();
     ZSocket client = ZSocket(ZMQ_REQ);
-    client.setsockopt(ZMQ_IDENTITY, c.pub.ptr, c.pub.length);
     client.curveClient(b, c);
+    client.setsockopt(ZMQ_IDENTITY, c.pub.ptr, c.pub.length);
     client.connect("tcp://127.0.0.1:9000");
 
     client.send("sup moite");
@@ -35,6 +54,9 @@ void main() {
     auto repN = server.recvFrames(buf);
     repN = repN > buf.length ? buf.length : repN;
     writeln(0.iota(repN).map!(x => (cast(ubyte[])buf[x].data).escape).join(" "));
+    import deimos.zmq.zmq;
+    import std.string;
+    writeln(zmq_msg_gets(&buf[0].msg, "User-Id").fromStringz);
 }
 
 void main3(string[] args) {

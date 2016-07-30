@@ -73,6 +73,10 @@ struct ZSocket {
         zmq_close(destroying);
     }
 
+    void setsockopt(int opt, const(void)[] value) {
+        setsockopt(opt, value.ptr, value.length);
+    }
+
     void setsockopt(int opt, const(void)* value, size_t len) {
         int rc = zmq_setsockopt(socket, opt, value, len);
         enforce(rc != -1);
@@ -237,6 +241,19 @@ void sendFrames(ref ZSocket socket, ZMessage[] buf) {
     }
 }
 
+RaiiList!ZMessage recvFrames(ref ZSocket socket) {
+    RaiiList!ZMessage buf;
+    recvFrames(socket, buf);
+    return buf;
+}
+
+void recvFrames(ref ZSocket socket, ref RaiiList!ZMessage buf) {
+    bool more = true;
+    while (more) {
+        socket.recv(buf.emplace(0), &more);
+    }
+}
+
 class AuthError : Exception {
     this(in CurveKey k) {
         super((k.pub ~ " key reject.").idup);
@@ -273,7 +290,7 @@ void installZap(bool delegate(in CurveKey ident) cb) {
 
         while (true) {
             ZMessage[7] request;
-            auto requestN = handler.recvFrames(request);
+            auto requestN = handler.recvFrames(request);          
             ZMessage[6] response;
             foreach(ref r; response) r = ZMessage(0);
             try {
@@ -305,4 +322,67 @@ void installZap(bool delegate(in CurveKey ident) cb) {
     a.isDaemon = true;
     a.start();
     zapReady.recv();
+}
+
+struct RaiiList(T) {
+    private ubyte[] data;
+
+    @disable this(this);
+
+    ~this() {
+        foreach(ref T t; cast(T[])data) {
+            .destroy(t);
+        }
+    }
+
+    ref inout(T) opIndex(size_t r) inout {
+        return (cast(inout(T)[])data)[r];
+    }
+
+    inout(T)[] opSlice(size_t a, size_t b) inout {
+        return (cast(inout(T)[])data)[a..b];
+    }
+
+    inout(T)[] opSlice() inout {
+        return cast(inout(T)[])data;
+    }
+
+    size_t opDollar() const {
+        return length;
+    }
+
+    size_t length() const {
+        return (cast(const(T)[])data).length;
+    }
+
+    ref T emplace(Args...)(Args args) {
+        static import std.conv;
+
+        data.length += T.sizeof;
+        auto typed = cast(T[])data;
+        std.conv.emplace(typed[$-1..$].ptr, args);
+        return typed[$-1];
+    }
+
+    ref inout(T) front() inout {
+        return this[0];
+    }
+
+    bool empty() {
+        return length == 0;
+    }
+
+    void popFront() {
+        .destroy((cast(T[])data)[0]);
+        data = data[T.sizeof..$];
+    }
+
+    inout(T)*[] ptrList() inout {
+        inout(T)*[] r;
+        r.length = length;
+        foreach(k, ref inout(T) t; cast(inout(T)[])data) {
+            r[k] = &t;
+        }
+        return r;
+    }
 }
