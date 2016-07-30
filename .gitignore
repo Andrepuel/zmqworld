@@ -1,6 +1,7 @@
 .dub
 .*.swp
-/zmqworld
+/zmqworld_app
+/libzmqworld.a
 docs.json
 __dummy.html
 *.o

@@ -1,6 +1,12 @@
 name "zmqworld"
+targetType "library"
 description "A minimal D application."
 authors "Andre Puel"
 copyright "Copyright © 2016, Andre Puel"
 license "proprietary"
 dependency "zeromq" version="~>4.1.4"
+subPackage {
+    name "app"
+    sourcePaths "app"
+    dependency "zmqworld" version="*"
+}
