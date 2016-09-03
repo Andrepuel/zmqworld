@@ -9,16 +9,19 @@ public import deimos.zmq.zmq : ZMQ_PAIR, ZMQ_PUB, ZMQ_SUB, ZMQ_REQ, ZMQ_REP, ZMQ
 public import deimos.zmq.zmq : ZMQ_IDENTITY, ZMQ_SUBSCRIBE, ZMQ_UNSUBSCRIBE, ZMQ_RATE, ZMQ_RECOVERY_IVL, ZMQ_SNDBUF, ZMQ_RCVBUF, ZMQ_RCVMORE, ZMQ_FD, ZMQ_EVENTS, ZMQ_TYPE, ZMQ_LINGER, ZMQ_RECONNECT_IVL, ZMQ_BACKLOG, ZMQ_RECONNECT_IVL_MAX, ZMQ_MAXMSGSIZE, ZMQ_SNDHWM, ZMQ_RCVHWM, ZMQ_MULTICAST_HOPS, ZMQ_RCVTIMEO, ZMQ_SNDTIMEO, ZMQ_LAST_ENDPOINT, ZMQ_ROUTER_MANDATORY, ZMQ_TCP_KEEPALIVE, ZMQ_TCP_KEEPALIVE_CNT, ZMQ_TCP_KEEPALIVE_IDLE, ZMQ_TCP_KEEPALIVE_INTVL, ZMQ_IMMEDIATE, ZMQ_XPUB_VERBOSE, ZMQ_ROUTER_RAW, ZMQ_IPV6, ZMQ_MECHANISM, ZMQ_PLAIN_SERVER, ZMQ_PLAIN_USERNAME, ZMQ_PLAIN_PASSWORD, ZMQ_CURVE_SERVER, ZMQ_CURVE_PUBLICKEY, ZMQ_CURVE_SECRETKEY, ZMQ_CURVE_SERVERKEY, ZMQ_PROBE_ROUTER, ZMQ_REQ_CORRELATE, ZMQ_REQ_RELAXED, ZMQ_CONFLATE, ZMQ_ZAP_DOMAIN, ZMQ_ROUTER_HANDOVER, ZMQ_TOS, ZMQ_CONNECT_RID, ZMQ_GSSAPI_SERVER, ZMQ_GSSAPI_PRINCIPAL, ZMQ_GSSAPI_SERVICE_PRINCIPAL, ZMQ_GSSAPI_PLAINTEXT, ZMQ_HANDSHAKE_IVL, ZMQ_SOCKS_PROXY, ZMQ_XPUB_NODROP;
 public import deimos.zmq.zmq : ZMQ_DONTWAIT, ZMQ_SNDMORE;
 
+struct ZContext {
+    void* zctx;
+    this(int) {
+        zctx = zmq_ctx_new();
+        assert(zctx != null);
+    }
 
-__gshared void* zctx;
-shared static this() {
-    zctx = zmq_ctx_new();
-    assert(zctx != null);
-}
-
-shared static ~this() {
-    zmq_ctx_term(zctx);
-    zctx = null;
+    @disable this(this);
+    ~this() {
+        if (zctx is null) return;
+        zmq_ctx_term(zctx);
+        zctx = null;
+    }
 }
 
 struct CurveKey {
@@ -61,8 +64,8 @@ struct ZSocket {
 
     @disable this(this);
 
-    this(int type) {
-        socket = zmq_socket(zctx, type);
+    this(int type, ref ZContext ctx) {
+        socket = zmq_socket(ctx.zctx, type);
         enforce(socket !is null);
     }
 
@@ -330,10 +333,12 @@ struct ZapCtx {
     import core.thread;
 
     Thread zapThread;
+    ZContext* ctx;
 
     @disable this(this);
-    this(const(char)[] delegate(ref const(CurveKey) key) cb) {
-        ZSocket zapReady = ZSocket(ZMQ_PULL);
+    this(const(char)[] delegate(ref const(CurveKey) key) cb, ref ZContext ctx) {
+        this.ctx = &ctx;
+        ZSocket zapReady = ZSocket(ZMQ_PULL, ctx);
         zapReady.bind("inproc://zap_ready");
 
         zapThread = new Thread(() {
@@ -348,14 +353,14 @@ struct ZapCtx {
             ZMessage msg_400 = ZMessage("400");
             ZMessage msg_500 = ZMessage("500");
 
-            ZSocket[2] sockets = [ZSocket(ZMQ_REP), ZSocket(ZMQ_PULL)];
+            ZSocket[2] sockets = [ZSocket(ZMQ_REP, ctx), ZSocket(ZMQ_PULL, ctx)];
             auto handler = &sockets[0];
             handler.bind("inproc://zeromq.zap.01");
             auto term = &sockets[1];
             term.bind("inproc://zap_destroy");
 
             {
-                ZSocket zapReadyNotify = ZSocket(ZMQ_PUSH);
+                ZSocket zapReadyNotify = ZSocket(ZMQ_PUSH, ctx);
                 zapReadyNotify.connect("inproc://zap_ready");
                 ZMessage empty = ZMessage(0);
                 zapReadyNotify.send(empty);
@@ -407,7 +412,7 @@ struct ZapCtx {
     ~this() {
         if (zapThread is null) return;
         
-        ZSocket term = ZSocket(ZMQ_PUSH);
+        ZSocket term = ZSocket(ZMQ_PUSH, *ctx);
         term.connect("inproc://zap_destroy");
         term.send("");
         zapThread.join();
@@ -415,10 +420,6 @@ struct ZapCtx {
         zapThread = null;
     }
 };
-
-ZapCtx installZap(const(char)[] delegate(ref const(CurveKey) key) cb) {
-    return ZapCtx(cb);
-}
 
 struct RaiiList(T) {
     private ubyte[] data;
