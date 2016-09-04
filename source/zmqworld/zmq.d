@@ -427,12 +427,9 @@ struct RaiiList(T) {
 
     @disable this(this);
 
-    this(U)(U input)
-    if (isInputRange!U)
-    {
-        while(!input.empty) {
-            emplace(input.front);
-            input.popFront;
+    this(Args...)(Args input) {
+        foreach(ref each; input) {
+            emplace(each);
         }
     }
 
