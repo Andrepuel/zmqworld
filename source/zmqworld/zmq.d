@@ -253,9 +253,10 @@ struct ZMessage {
         return r;
     }
 
-    ubyte[] data() {
+    inout(ubyte)[] data() inout {
         assert(this);
-        return (cast(ubyte*)zmq_msg_data(&msg))[0..zmq_msg_size(&msg)];
+        auto msgptr = cast(zmq_msg_t*)&msg;
+        return (cast(inout(ubyte)*)zmq_msg_data(msgptr))[0..zmq_msg_size(msgptr)];
     }
 
     const(char)[] userId() {
@@ -426,6 +427,15 @@ struct RaiiList(T) {
 
     @disable this(this);
 
+    this(U)(U input)
+    if (isInputRange!U)
+    {
+        while(!input.empty) {
+            emplace(input.front);
+            input.popFront;
+        }
+    }
+
     ~this() {
         foreach(ref T t; cast(T[])data) {
             .destroy(t);
@@ -483,3 +493,4 @@ struct RaiiList(T) {
         return r;
     }
 }
+alias Frames = RaiiList!ZMessage;
