@@ -468,6 +468,17 @@ struct RaiiList(T) {
         return typed[$-1];
     }
 
+    ref T emplaceFront(Args...)(Args args) {
+        static import std.conv;
+        
+        auto old = data.dup;
+        data.length += T.sizeof;
+        data[T.sizeof..$] = old;
+        auto typed = cast(T[])data;
+        std.conv.emplace(typed[0..1].ptr, args);
+        return typed[0];
+    }
+
     ref inout(T) front() inout {
         return this[0];
     }
@@ -489,5 +500,22 @@ struct RaiiList(T) {
         }
         return r;
     }
+
+    RaiiList!T split(size_t pos) {
+        assert(pos <= length);
+        RaiiList!T r;
+        r.data = data[0..pos*T.sizeof];
+        data = data[pos*T.sizeof..$];
+        return r;
+    }
 }
 alias Frames = RaiiList!ZMessage;
+
+Frames copy(ref Frames orig) {
+    Frames r;
+    foreach(ref msg; orig[]) {
+        r.emplace(0);
+        r[$-1] = msg.copy();
+    }
+    return r;
+}
