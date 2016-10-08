@@ -9,6 +9,15 @@ public import deimos.zmq.zmq : ZMQ_PAIR, ZMQ_PUB, ZMQ_SUB, ZMQ_REQ, ZMQ_REP, ZMQ
 public import deimos.zmq.zmq : ZMQ_IDENTITY, ZMQ_SUBSCRIBE, ZMQ_UNSUBSCRIBE, ZMQ_RATE, ZMQ_RECOVERY_IVL, ZMQ_SNDBUF, ZMQ_RCVBUF, ZMQ_RCVMORE, ZMQ_FD, ZMQ_EVENTS, ZMQ_TYPE, ZMQ_LINGER, ZMQ_RECONNECT_IVL, ZMQ_BACKLOG, ZMQ_RECONNECT_IVL_MAX, ZMQ_MAXMSGSIZE, ZMQ_SNDHWM, ZMQ_RCVHWM, ZMQ_MULTICAST_HOPS, ZMQ_RCVTIMEO, ZMQ_SNDTIMEO, ZMQ_LAST_ENDPOINT, ZMQ_ROUTER_MANDATORY, ZMQ_TCP_KEEPALIVE, ZMQ_TCP_KEEPALIVE_CNT, ZMQ_TCP_KEEPALIVE_IDLE, ZMQ_TCP_KEEPALIVE_INTVL, ZMQ_IMMEDIATE, ZMQ_XPUB_VERBOSE, ZMQ_ROUTER_RAW, ZMQ_IPV6, ZMQ_MECHANISM, ZMQ_PLAIN_SERVER, ZMQ_PLAIN_USERNAME, ZMQ_PLAIN_PASSWORD, ZMQ_CURVE_SERVER, ZMQ_CURVE_PUBLICKEY, ZMQ_CURVE_SECRETKEY, ZMQ_CURVE_SERVERKEY, ZMQ_PROBE_ROUTER, ZMQ_REQ_CORRELATE, ZMQ_REQ_RELAXED, ZMQ_CONFLATE, ZMQ_ZAP_DOMAIN, ZMQ_ROUTER_HANDOVER, ZMQ_TOS, ZMQ_CONNECT_RID, ZMQ_GSSAPI_SERVER, ZMQ_GSSAPI_PRINCIPAL, ZMQ_GSSAPI_SERVICE_PRINCIPAL, ZMQ_GSSAPI_PLAINTEXT, ZMQ_HANDSHAKE_IVL, ZMQ_SOCKS_PROXY, ZMQ_XPUB_NODROP;
 public import deimos.zmq.zmq : ZMQ_DONTWAIT, ZMQ_SNDMORE;
 
+int zsig(alias f, Args...)(Args args) {
+    import core.stdc.errno : EINTR;
+    int rc;
+    do {
+        rc = f(args);
+    } while(rc == -1 && zmq_errno() == EINTR);
+    return rc;
+}
+
 struct ZContext {
     void* zctx;
     this(int) {
@@ -138,12 +147,12 @@ struct ZSocket {
     }
 
     void send(const(void)[] data, int flags = 0) {
-        int rc = zmq_send(socket, data.ptr, data.length, flags);
+        int rc = zsig!zmq_send(socket, data.ptr, data.length, flags);
         enforce(rc != -1);
     }
 
     void[] recv(void[] data, bool* recvmore = null) {
-        int rc = zmq_recv(socket, data.ptr, data.length, 0);
+        int rc = zsig!zmq_recv(socket, data.ptr, data.length, 0);
         enforce(rc != -1);
         if (recvmore !is null) {
             *recvmore = getsockopt!int(ZMQ_RCVMORE) > 0;
@@ -153,7 +162,7 @@ struct ZSocket {
 
     void send(ref ZMessage msg, int flags = 0) {
         enforce(cast(bool) msg);
-        int rc = zmq_msg_send(&msg.msg, socket, flags);
+        int rc = zsig!zmq_msg_send(&msg.msg, socket, flags);
         enforce(rc != -1);
     }
 
@@ -165,7 +174,7 @@ struct ZSocket {
 
     void recv(ref ZMessage msg, bool* recvmore = null) {
         enforce(cast(bool) msg);
-        int rc = zmq_msg_recv(&msg.msg, socket, 0);
+        int rc = zsig!zmq_msg_recv(&msg.msg, socket, 0);
         enforce(rc != -1, "Errno %s".format(zmq_errno()));
         if (recvmore !is null) {
             *recvmore = getsockopt!int(ZMQ_RCVMORE) > 0;
@@ -184,7 +193,7 @@ struct ZSocket {
             item.events = ZMQ_POLLIN;
         }
 
-        int rc = zmq_poll(socketitems.ptr, cast(int) socketitems.length, timeout);
+        int rc = zsig!zmq_poll(socketitems.ptr, cast(int) socketitems.length, timeout);
         enforce(rc != -1);
         if (rc == 0) return null;
         foreach(i, each; socketitems) {
@@ -203,7 +212,7 @@ struct ZSocket {
 
         ulong timeout = timeoutDur.total!"msecs";
         auto socketitems = sockets.map!(x => zmq_pollitem_t(x.socket, 0, ZMQ_POLLIN, 0)).array;
-        int rc = zmq_poll(socketitems.ptr, cast(int) socketitems.length, timeout);
+        int rc = zsig!zmq_poll(socketitems.ptr, cast(int) socketitems.length, timeout);
         enforce(rc != -1, "Errno %s".format(zmq_errno()));
         if (rc == 0) return null;
         foreach(i, each; socketitems) {
