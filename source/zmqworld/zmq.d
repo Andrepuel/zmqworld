@@ -204,7 +204,7 @@ struct ZSocket {
         ulong timeout = timeoutDur.total!"msecs";
         auto socketitems = sockets.map!(x => zmq_pollitem_t(x.socket, 0, ZMQ_POLLIN, 0)).array;
         int rc = zmq_poll(socketitems.ptr, cast(int) socketitems.length, timeout);
-        enforce(rc != -1);
+        enforce(rc != -1, "Errno %s".format(zmq_errno()));
         if (rc == 0) return null;
         foreach(i, each; socketitems) {
             if (each.revents & ZMQ_POLLIN) {
@@ -230,7 +230,7 @@ struct ZMessage {
         } else {
             rc = zmq_msg_init_size(&msg, size);
         }
-        enforce(rc != -1);
+        enforce(rc != -1, "Errno %s".format(zmq_errno()));
         assert(this);
     }
 
@@ -425,6 +425,11 @@ struct ZapCtx {
 struct RaiiList(T) {
     private ubyte[] data;
 
+    private void resize(size_t newLength) {
+        import core.memory : GC;
+        data = (cast(ubyte*)GC.realloc(data.ptr, newLength*T.sizeof))[0..T.sizeof*newLength];
+    }
+
     @disable this(this);
 
     this(Args...)(Args input) {
@@ -437,6 +442,7 @@ struct RaiiList(T) {
         foreach(ref T t; cast(T[])data) {
             .destroy(t);
         }
+        if (data.length > 0) resize(0);
     }
 
     ref inout(T) opIndex(size_t r) inout {
@@ -462,7 +468,7 @@ struct RaiiList(T) {
     ref T emplace(Args...)(Args args) {
         static import std.conv;
 
-        data.length += T.sizeof;
+        resize(length+1);
         auto typed = cast(T[])data;
         std.conv.emplace(typed[$-1..$].ptr, args);
         return typed[$-1];
@@ -472,7 +478,7 @@ struct RaiiList(T) {
         static import std.conv;
         
         auto old = data.dup;
-        data.length += T.sizeof;
+        resize(length+1);
         data[T.sizeof..$] = old;
         auto typed = cast(T[])data;
         std.conv.emplace(typed[0..1].ptr, args);
@@ -503,9 +509,14 @@ struct RaiiList(T) {
 
     RaiiList!T split(size_t pos) {
         assert(pos <= length);
+        auto original = data;
+        auto newSize = length - pos;
+
         RaiiList!T r;
         r.data = data[0..pos*T.sizeof];
-        data = data[pos*T.sizeof..$];
+        data = null;
+        resize(newSize);
+        data[] = original[pos*T.sizeof..$];
         return r;
     }
 }
