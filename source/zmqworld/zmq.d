@@ -26,7 +26,7 @@ struct ZContext {
     }
 
     @disable this(this);
-    ~this() {
+    ~this() nothrow {
         if (zctx is null) return;
         zmq_ctx_term(zctx);
         zctx = null;
@@ -78,7 +78,7 @@ struct ZSocket {
         enforce(socket !is null);
     }
 
-    ~this() {
+    ~this() nothrow {
         import std.algorithm : swap;
 
         if (socket is null) return;
@@ -134,7 +134,7 @@ struct ZSocket {
         addrZ[0..$-1] = addr[];
         addrZ[$-1] = 0;
         int rc = zmq_bind(socket, addrZ.ptr);
-        enforce(rc != -1);
+        enforce(rc != -1, "Errno %s".format(zmq_errno));
     }
 
     void connect(string addr) {
@@ -143,7 +143,7 @@ struct ZSocket {
         addrZ[0..$-1] = addr[];
         addrZ[$-1] = 0;
         int rc = zmq_connect(socket, addrZ.ptr);
-        enforce(rc != -1);
+        enforce(rc != -1, "Errno %s on %s".format(zmq_errno, addr));
     }
 
     void send(const(void)[] data, int flags = 0) {
@@ -163,7 +163,7 @@ struct ZSocket {
     void send(ref ZMessage msg, int flags = 0) {
         enforce(cast(bool) msg);
         int rc = zsig!zmq_msg_send(&msg.msg, socket, flags);
-        enforce(rc != -1);
+        enforce(rc != -1, "Errorno %s".format(zmq_errno));
     }
 
     ZMessage recv(bool* recvmore = null) {
